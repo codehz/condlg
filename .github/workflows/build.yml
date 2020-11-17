@@ -1,0 +1,53 @@
+name: build
+on:
+  push:
+    branches: [ 💥 ]
+    tags:
+      - 'v*'
+
+env:
+  zig-version: 0.7.0+6e2e747b0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [false, true]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - uses: codehz/setup-zig@v1.2.8
+        with:
+          version: ${{ env.zig-version }}
+      - name: Download rcedit.exe
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: electron/rcedit
+          latest: true
+          fileName: rcedit-x64.exe
+          out-file-path: ${{ runner.tool_cache }}/rcedit
+      - name: Setup rcedit
+        run: |
+          Rename-Item ${{ runner.tool_cache }}\rcedit\rcedit-x64.exe ${{ runner.tool_cache }}\rcedit\rcedit.exe
+          echo "${{ runner.tool_cache }}\rcedit" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build on windows
+        run: |
+          zig build -Drelease=${{ matrix.release }} -D32=false --verbose
+      - name: Build on windows (32bit)
+        run: |
+          zig build -Drelease=${{ matrix.release }} -D32=true --verbose
+      - name: Upload artifact debug
+        uses: actions/upload-artifact@v2
+        if: "!matrix.release"
+        with:
+          name: debug
+          path: zig-cache/bin
+      - name: Upload artifact release
+        uses: actions/upload-artifact@v2
+        if: "matrix.release"
+        with:
+          name: release
+          path: zig-cache/bin
