@@ -357,7 +357,7 @@ const Module = struct {
                             this.cascade = false;
 
                             if (this.onexit) |prog| {
-                                _ = shellexec.exec(prog, this.pipe);
+                                _ = shellexec.exec(prog, this.pipe, true);
                             } else {
                                 dlg.enableButton(1, true) catch {};
                                 dlg.setMarqueeProgressBar(false) catch {};
