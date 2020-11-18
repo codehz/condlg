@@ -87,4 +87,9 @@ pub fn build(b: *Builder) void {
             .LegalCopyright = "Copyright 2020 CodeHz"
         },
     });
+
+    const testStep = b.step("test", "Do alg test");
+    const condlg_test = b.addTest("src/condlg.zig");
+    condlg_test.setTarget(target);
+    testStep.dependOn(&condlg_test.step);
 }

@@ -23,11 +23,11 @@ const ShellExecuteInfo = extern struct {
 
 const L = std.unicode.utf8ToUtf16LeStringLiteral;
 
-pub fn exec(file: [:0]const u16, parameters: ?[:0]const u16, hide: bool) bool {
+pub fn exec(file: ?[*:0]const u16, parameters: ?[*:0]const u16, hide: bool) bool {
     _ = CoInitializeEx(null, 0x6);
     var info = ShellExecuteInfo{
-        .file = file.ptr,
-        .parameters = if (parameters) |p| p.ptr else null,
+        .file = file,
+        .parameters = parameters,
         .show = if (hide) 0 else 5,
     };
     return ShellExecuteExW(&info);

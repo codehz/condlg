@@ -1,6 +1,7 @@
 const std = @import("std");
 const Flags = @import("flags.zig").Flags;
 const windows = std.os.windows;
+const shellexec = @import("shellexec.zig");
 
 pub const HWND = *opaque {};
 pub const HICON = *opaque {};
@@ -124,7 +125,7 @@ pub const TaskDialogNotificationData = union(TaskDialogNotification) {
     Created: void,
     Navigated: void,
     ButtonClicked: c_uint,
-    HyperlinkClicked: [*:0]const u16,
+    HyperlinkClicked: ?[*:0]const u16,
     Timer: c_uint,
     Destroyed: void,
     RadioButtonClicked: c_uint,
@@ -220,7 +221,7 @@ fn callbackTrampoline(comptime Handler: type) TaskDialogCallback {
                 .Created => .Created,
                 .Navigated => .Navigated,
                 .ButtonClicked => TaskDialogNotificationData{ .ButtonClicked = @intCast(c_uint, win) },
-                .HyperlinkClicked => TaskDialogNotificationData{ .HyperlinkClicked = @intToPtr([*:0]const u16, win) },
+                .HyperlinkClicked => TaskDialogNotificationData{ .HyperlinkClicked = @intToPtr(?[*:0]const u16, user) },
                 .Timer => TaskDialogNotificationData{ .Timer = @intCast(c_uint, win) },
                 .Destroyed => .Destroyed,
                 .RadioButtonClicked => TaskDialogNotificationData{ .RadioButtonClicked = @intCast(c_uint, win) },
@@ -274,7 +275,7 @@ pub const CommonOptions = struct {
 pub fn showSimpleProgress(common: CommonOptions, btnType: CommonButtonFlags, handler: anytype) !c_uint {
     comptime const Handler = @TypeOf(handler.*);
     const cfg = TaskDialogConfig{
-        .flags = TaskDialogFlags.create(.{ .ShowProgressBar, .CallbackTimer }),
+        .flags = TaskDialogFlags.create(.{ .EnableHyperlinks, .ShowProgressBar, .CallbackTimer }),
         .inst = Instance(),
         .btnflags = btnType,
         .title = common.title,
@@ -296,14 +297,17 @@ pub fn showSimpleProgress(common: CommonOptions, btnType: CommonButtonFlags, han
 }
 
 pub fn showSelect(common: CommonOptions, cancellable: bool, btns: []const TaskDialogButton) !c_uint {
+    var handler: DefaultHandler = .{};
     var cfg = TaskDialogConfig{
-        .flags = TaskDialogFlags.create(.{ .UseCommandLinks, .UseCommandLinksIcon }),
+        .flags = TaskDialogFlags.create(.{ .EnableHyperlinks, .UseCommandLinks, .UseCommandLinksIcon }),
         .inst = Instance(),
         .title = common.title,
         .instrustion = common.instrustion,
         .content = common.content,
         .btnc = @intCast(c_uint, btns.len),
         .btns = btns.ptr,
+        .callback = callbackTrampoline(DefaultHandler),
+        .callbackData = &handler,
         .mainIcon = .{ .res = MAKEINTRESOURCE(@enumToInt(common.icon)) },
     };
     if (cancellable) cfg.flags.add(.AllowDialogCancellation);
@@ -319,13 +323,37 @@ pub fn showSelect(common: CommonOptions, cancellable: bool, btns: []const TaskDi
 }
 
 pub fn showMessageBox(common: CommonOptions, btnType: CommonButtonFlags) !c_uint {
-    var btn: c_uint = undefined;
-    const res = TaskDialog(null, Instance(), common.title, common.instrustion, common.content, @enumToInt(btnType), MAKEINTRESOURCE(@enumToInt(common.icon)), &btn);
+    var handler: DefaultHandler = .{};
+    var cfg = TaskDialogConfig{
+        .flags = TaskDialogFlags.create(.{ .EnableHyperlinks, .AllowDialogCancellation }),
+        .inst = Instance(),
+        .btnflags = btnType,
+        .title = common.title,
+        .instrustion = common.instrustion,
+        .content = common.content,
+        .callback = callbackTrampoline(DefaultHandler),
+        .callbackData = &handler,
+        .mainIcon = .{ .res = MAKEINTRESOURCE(@enumToInt(common.icon)) },
+    };
+    var selected: c_uint = 0;
+    const res = TaskDialogIndirect(&cfg, &selected, null, null);
     switch (res) {
-        0 => return btn,
+        0 => return selected,
         0x8007000E => return error.OutOfMemory,
         0x80070057 => return error.InvalidArguments,
         0x80004005 => return error.UnspecifiedFailure,
         else => return error.UnexpectedError,
     }
 }
+
+const DefaultHandler = struct {
+    stub: u32 = 0,
+
+    pub fn invoke(this: *@This(), dlg: Dialog, data: TaskDialogNotificationData, user: usize) HRESULT {
+        switch (data) {
+            .HyperlinkClicked => |file| _ = shellexec.exec(file, null, false),
+            else => {},
+        }
+        return 0;
+    }
+};

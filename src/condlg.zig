@@ -17,9 +17,11 @@ fn readContents(path: ?[:0]const u16, allocator: *std.mem.Allocator, first: ?cli
         errdefer allocator.free(buffer);
         _ = try std.os.windows.ReadFile(file.handle, std.mem.sliceAsBytes(buffer[0..]), null, .blocking);
         buffer[@divExact(size, 2)] = 0;
-        return buffer[0..@divExact(size, 2) :0];
+        return translateContent(buffer[0..@divExact(size, 2) :0], allocator);
     } else {
-        return readRest(@intCast(u16, '\n'), allocator, first, iter);
+        const orig = try readRest(@intCast(u16, '\n'), allocator, first, iter);
+        errdefer allocator.free(orig);
+        return translateContent(orig, allocator);
     }
 }
 
@@ -35,6 +37,89 @@ fn readRest(sep: u16, allocator: *std.mem.Allocator, first: ?cli.ArgIteratorW.Da
     } else {
         return error.NoFile;
     }
+}
+
+fn translateContent(pdata: [:0]const u16, allocator: *std.mem.Allocator) ![:0]const u16 {
+    const State = enum {
+        Normal,
+        StartText,
+        EndText,
+        StartHref,
+    };
+    var ret = try std.ArrayListSentineled(u16, 0).initSize(allocator, 0);
+    defer ret.deinit();
+    var sync: usize = 0;
+    var start: usize = 0;
+    var text: []const u16 = undefined;
+    var state: State = .Normal;
+    for (pdata) |ch, i| switch (state) {
+        .Normal => switch (ch) {
+            '[' => {
+                start = i;
+                state = .StartText;
+            },
+            else => {},
+        },
+        .StartText => switch (ch) {
+            '[' => start = i,
+            ']' => if (i == start + 1) {
+                state = .Normal;
+            } else {
+                text = pdata[start + 1 .. i];
+                state = .EndText;
+            },
+            else => {},
+        },
+        .EndText => switch (ch) {
+            '(' => state = .StartHref,
+            else => state = .Normal,
+        },
+        .StartHref => switch (ch) {
+            ')' => if (i == start + text.len + 4) {
+                state = .Normal;
+            } else {
+                try ret.appendSlice(pdata[sync..start]);
+                try ret.appendSlice(L("<A HREF=\""));
+                try ret.appendSlice(pdata[start + text.len + 3 .. i]);
+                try ret.appendSlice(L("\">"));
+                try ret.appendSlice(text);
+                try ret.appendSlice(L("</A>"));
+                sync = i + 1;
+
+                state = .Normal;
+            },
+            else => {},
+        },
+    };
+    if (sync == 0) return pdata;
+    try ret.appendSlice(pdata[sync..]);
+    const owned = ret.toOwnedSlice();
+    allocator.free(pdata);
+    return owned;
+}
+
+fn testTranslateContent(comptime expected: []const u8, comptime input: []const u8) !void {
+    const dest = blk: {
+        const orig = try std.testing.allocator.dupeZ(u16, L(input));
+        errdefer std.testing.allocator.free(orig);
+        break :blk try translateContent(orig, std.testing.allocator);
+    };
+    defer std.testing.allocator.free(dest);
+    var ret: [expected.len * 2]u8 = undefined;
+    const u8len = try std.unicode.utf16leToUtf8(&ret, dest);
+    std.testing.expectEqualStrings(expected, ret[0..u8len]);
+}
+
+test "translateContent - no change" {
+    try testTranslateContent("123", "123");
+}
+
+test "translateContent - translate link" {
+    try testTranslateContent("123<A HREF=\"https://www.google.com\">456</A>789", "123[456](https://www.google.com)789");
+}
+
+test "translateContent - translate copmplex link" {
+    try testTranslateContent("123[<A HREF=\"https://www.google.com\">456</A>]789", "123[[456](https://www.google.com)]789");
 }
 
 const RequestType = extern enum(u64) {
@@ -63,6 +148,7 @@ const RpcCommand = struct {
         NoPipe,
         NoFile,
         FailedToCallNamedPipe,
+        InvalidLink,
     };
     pub const Result = u8;
 
@@ -236,6 +322,7 @@ const Module = struct {
             pub fn invoke(this: *@This(), dlg: win.Dialog, data: win.TaskDialogNotificationData, user: usize) win.HRESULT {
                 switch (data) {
                     .Created => dlg.setProgressBarRange(0, 65535) catch {},
+                    .HyperlinkClicked => |file| _ = shellexec.exec(file, null, false),
                     .Timer => |val| {
                         const ret = if (val >= this.timeout)
                             dlg.close()
@@ -345,6 +432,7 @@ const Module = struct {
                         dlg.setProgressBarMarquee(this.fps) catch {};
                         dlg.enableButton(1, false) catch {};
                     },
+                    .HyperlinkClicked => |file| _ = shellexec.exec(file, null, false),
                     .Timer => |val| {
                         if (this.ctx.w32pipe) |pipe| {
                             if (pipe.connectNoWait()) {
@@ -357,7 +445,7 @@ const Module = struct {
                             this.cascade = false;
 
                             if (this.onexit) |prog| {
-                                _ = shellexec.exec(prog, this.pipe, true);
+                                _ = shellexec.exec(prog, if (this.pipe) |p| p.ptr else null, true);
                             } else {
                                 dlg.enableButton(1, true) catch {};
                                 dlg.setMarqueeProgressBar(false) catch {};
